@@ -105,6 +105,8 @@ button{cursor:pointer}
 .chip .nm{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .chip .meta{font-size:11.5px;color:var(--ink-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .chip .meta b{color:var(--ink-2);font-weight:500}
+.chip .sync{font-family:var(--mono);font-size:9.5px;font-weight:500;color:var(--accent);border:1px solid currentColor;border-radius:3px;padding:0 3px;margin-left:6px;vertical-align:1px;text-transform:uppercase;letter-spacing:.04em}
+.sync-note{font-size:12.5px;color:var(--ink-2);background:var(--accent-soft);border-radius:5px;padding:6px 9px;margin:0}
 .chip.assigned{background:var(--panel)}
 .chip.assigned .nm{color:var(--ink-2)}
 .ib{border:0;background:transparent;color:var(--ink-3);width:26px;height:26px;border-radius:4px;display:inline-grid;place-items:center;flex:none}
@@ -283,7 +285,8 @@ dialog h3{font-family:var(--display);font-size:22px;text-transform:uppercase;mar
 <dialog id="dlgStaff">
   <form id="fStaff" method="dialog">
     <h3 id="fStaffTitle">Ajouter du personnel</h3>
-    <div class="fld"><label for="sName">Nom</label><input id="sName" required placeholder="Dr Martin" autocomplete="off"></div>
+    <p class="sync-note" id="sSyncNote" hidden>Personne liée au tableau de garde : les changements de nom et de téléphone y sont reportés.</p>
+    <div class="fld"><label for="sName">Nom</label><input id="sName" required placeholder="Dr Martin" autocomplete="off" list="sNameList"><datalist id="sNameList"></datalist></div>
     <div class="fld"><label>Fonction</label>
       <div class="seg" role="radiogroup">
         <label><input type="radio" name="sRole" id="sRoleMed" value="med" checked>Médecin</label>
@@ -291,6 +294,13 @@ dialog h3{font-family:var(--display);font-size:22px;text-transform:uppercase;mar
         <label><input type="radio" name="sRole" id="sRoleAmb" value="amb">Ambulancier</label>
       </div>
     </div>
+    <div class="row2" id="sTeamRow" hidden>
+      <div class="fld"><label for="sTeam">Place au tableau de garde</label>
+        <select id="sTeam"><option value="">Aucune (engins seulement)</option><option value="sp">SMUR Primaire</option><option value="ss">SMUR Secondaire</option></select>
+      </div>
+      <div class="fld"><label for="sStag">&nbsp;</label><label class="chk" style="padding-top:8px"><input type="checkbox" id="sStag">Stagiaire</label></div>
+    </div>
+    <p class="sync-note" id="sTeamHint" hidden></p>
     <div class="row2">
       <div class="fld"><label for="sShift">Horaire</label>
         <select id="sShift"></select>
@@ -421,7 +431,7 @@ let state = {
     s7:{name:'Dr Exemple G', role:'med', shift:'Nuit 18h30–08h30', phone:'', vehicle:null}
   }
 };
-let db = null, live = false, picked = null, fbState = 'connexion';
+let db = null, live = false, picked = null, fbState = 'connexion', gardeLink = '';
 const DEF_VEH = {};
 Object.entries(state.vehicles).forEach(([id,v])=>{ DEF_VEH[id] = {name:v.name, kind:v.kind, plate:'', status:'dispo', since:Date.now(), note:'', order:v.order}; });
 state = {garde:{date:today, shift:((new Date().getHours()>=7 && new Date().getHours()<19)?'Jour':'Nuit')}, vehicles:JSON.parse(JSON.stringify(DEF_VEH)), staff:{}};
@@ -485,12 +495,13 @@ function staffOf(vid){ return Object.entries(state.staff).filter(([,s])=>s.vehic
 function chipHTML(id, s, inVehicle){
   const r = ROLES[s.role] || ROLES.med;
   const v = s.vehicle && state.vehicles[s.vehicle];
+  const team = s.team ? esc(s.team.replace('SMUR ','')) + ' · ' : '';
   const meta = inVehicle
-    ? esc(s.shift) + (s.phone ? ' · ' + esc(s.phone) : '')
-    : (v ? '→ <b>' + esc(v.name) + '</b> · ' : '') + esc(s.shift);
+    ? team + esc(s.shift) + (s.phone ? ' · ' + esc(s.phone) : '')
+    : (v ? '→ <b>' + esc(v.name) + '</b> · ' : team) + esc(s.shift);
   return `<div class="chip${v && !inVehicle ? ' assigned':''}${picked==='s:'+id?' sel':''}" draggable="true" data-staff="${id}" tabindex="0" aria-label="${esc(r.label)} ${esc(s.name)}">
     <span class="role ${s.role}">${r.short}</span>
-    <span class="who"><span class="nm">${esc(s.name)}</span><span class="meta">${meta}</span></span>
+    <span class="who"><span class="nm">${esc(s.name)}${s.src==='garde'?'<span class="sync" title="Synchronisé depuis le tableau de garde">garde</span>':''}</span><span class="meta">${meta}</span></span>
     ${inVehicle
       ? `<button class="ib" type="button" data-unassign="${id}" title="Retirer de l'engin" aria-label="Retirer ${esc(s.name)} de l'engin">${ICON_X}</button>`
       : `<button class="ib" type="button" data-edit-staff="${id}" title="Modifier" aria-label="Modifier ${esc(s.name)}">${ICON_EDIT}</button>`}
@@ -503,7 +514,7 @@ function render(){
   const d = g.date ? new Date(g.date+'T12:00:00') : null;
   $('#gardeLabel').textContent = 'Garde ' + (g.shift ? g.shift.toLowerCase()+' ' : '') + 'du ' + (d ? d.toLocaleDateString('fr-FR',{weekday:'long',day:'numeric',month:'long'}) : '—');
   const tag = $('#modeTag'); tag.classList.toggle('live', fbState==='live');
-  tag.lastElementChild.textContent = fbState==='live' ? 'Synchronisé en direct' : fbState==='offline' ? 'Hors ligne — reprise automatique' : fbState==='echec' ? 'Firebase inaccessible — ce poste seulement' : 'Connexion…';
+  tag.lastElementChild.textContent = (fbState==='live' ? 'Synchronisé en direct' : fbState==='offline' ? 'Hors ligne — reprise automatique' : fbState==='echec' ? 'Firebase inaccessible — ce poste seulement' : 'Connexion…') + (gardeLink==='ok' ? ' · tableau de garde lié' : gardeLink==='refus' ? ' · tableau de garde non lié' : '');
 
   // strip
   const counts = {}; STATUSES.forEach(s=>counts[s.k]=0);
@@ -739,30 +750,78 @@ document.addEventListener('change', e=>{
 
 /* staff dialog */
 let editStaff = null;
+/* Hook tableau de garde : défini seulement dans la version Firebase */
+let gardeHook = null;
+const RK_OF = {med:'med', ide:'ide', amb:'ambu'};
+function slotOf(id){ const m = /^g-(sp|ss)-(med|ide|ambu)(-stag)?$/.exec(id||''); return m ? {team:m[1], rk:m[2], stag:!!m[3], base:m[1]+'-'+m[2]} : null; }
+function updateTeamHint(){
+  const hint = $('#sTeamHint');
+  if(!gardeHook || editStaff){ hint.hidden = true; return; }
+  const team = $('#sTeam').value; if(!team){ hint.hidden = true; return; }
+  const role = document.querySelector('input[name="sRole"]:checked').value;
+  const f = team + '-' + RK_OF[role] + ($('#sStag').checked ? '-stag' : '-nom');
+  const cur = gardeHook.value(f);
+  hint.textContent = cur ? 'Remplacera ' + cur + ' dans le tableau de garde.' : 'Sera ajouté(e) au tableau de garde.';
+  hint.hidden = false;
+}
+function fillNameList(role){
+  const names = gardeHook ? gardeHook.names(role) : [];
+  $('#sNameList').innerHTML = names.map(n=>`<option value="${esc(n)}"></option>`).join('');
+}
 function openStaff(id){
   editStaff = id || null;
   const s = id ? state.staff[id] : {name:'', role:'med', shift:'', phone:''};
+  const sl = slotOf(id);
   $('#fStaffTitle').textContent = id ? 'Modifier' : 'Ajouter du personnel';
-  $('#sName').value = s.name; $('#sPhone').value = s.phone||''; fillShifts(s.role, s.shift);
+  $('#sName').value = sl && sl.stag ? s.name.replace(/ \(stagiaire\)$/,'') : s.name;
+  $('#sTeamRow').hidden = !gardeHook || !!id;
+  $('#sTeam').value = ''; $('#sStag').checked = false;
+  fillNameList(s.role); $('#sPhone').value = s.phone||''; fillShifts(s.role, s.shift);
   document.querySelector(`input[name="sRole"][value="${s.role}"]`).checked = true;
-  $('#sDelete').hidden = !id;
-  $('#dlgStaff').showModal(); $('#sName').focus();
+  const synced = !!(id && s.src==='garde');
+  $('#sDelete').hidden = !id || (synced && !gardeHook);
+  $('#sDelete').textContent = synced ? 'Retirer du tableau de garde' : 'Retirer de la garde';
+  $('#sSyncNote').hidden = !synced;
+  $('#sName').disabled = synced && !gardeHook;
+  updateTeamHint();
+  document.querySelectorAll('input[name="sRole"]').forEach(r=>r.disabled = synced);
+  $('#dlgStaff').showModal(); (synced ? $('#sShift') : $('#sName')).focus();
 }
 document.querySelectorAll('input[name="sRole"]').forEach(r=>r.addEventListener('change', ()=>{
   const cur=$('#sShift').value; fillShifts(r.value, (SHIFTS[r.value]||[]).includes(cur) ? cur : '');
+  fillNameList(r.value); updateTeamHint();
 }));
+$('#sTeam').addEventListener('change', updateTeamHint);
+$('#sStag').addEventListener('change', updateTeamHint);
 $('#fStaff').addEventListener('submit', e=>{
   e.preventDefault();
   const name = $('#sName').value.trim(); if(!name) return;
   const data = {name, role:document.querySelector('input[name="sRole"]:checked').value, shift:$('#sShift').value, phone:$('#sPhone').value.trim()};
-  if(editStaff){ patch('staff', editStaff, data); }
+  const sl = slotOf(editStaff);
+  if(editStaff && sl && gardeHook && state.staff[editStaff].src==='garde'){
+    const f = sl.base + (sl.stag ? '-stag' : '-nom');
+    const shown = sl.stag ? name + ' (stagiaire)' : name;
+    patch('staff', editStaff, {name:shown, shift:data.shift, phone:data.phone});
+    gardeHook.write({[f]:name, [sl.base + (sl.stag ? '-stag-tel' : '-tel')]:data.phone}, sl.stag ? null : data.role);
+    toast('Modifié aussi dans le tableau de garde');
+  } else if(editStaff){ patch('staff', editStaff, data); }
+  else if(gardeHook && $('#sTeam').value){
+    const team = $('#sTeam').value, stag = $('#sStag').checked, base = team + '-' + RK_OF[data.role];
+    gardeHook.write({[base + (stag ? '-stag' : '-nom')]:name, [base + (stag ? '-stag-tel' : '-tel')]:data.phone}, stag ? null : data.role, data.shift);
+    toast(name + ' ajouté(e) au tableau de garde');
+  }
   else { put('staff', uid('p'), Object.assign(data,{vehicle:null})); toast(name + ' ajouté(e) à la garde'); }
   $('#dlgStaff').close();
 });
 $('#sDelete').addEventListener('click', ()=>{
   if(!editStaff) return;
   if($('#sDelete').dataset.armed!=='1'){ $('#sDelete').dataset.armed='1'; $('#sDelete').textContent='Confirmer le retrait'; return; }
-  del('staff', editStaff); $('#dlgStaff').close();
+  const sl = slotOf(editStaff);
+  if(sl && gardeHook && state.staff[editStaff] && state.staff[editStaff].src==='garde'){
+    gardeHook.write({[sl.base + (sl.stag ? '-stag' : '-nom')]:'', [sl.base + (sl.stag ? '-stag-tel' : '-tel')]:''});
+    toast('Retiré(e) du tableau de garde');
+  } else del('staff', editStaff);
+  $('#dlgStaff').close();
 });
 $('#dlgStaff').addEventListener('close', ()=>{ $('#sDelete').dataset.armed=''; $('#sDelete').textContent='Retirer de la garde'; });
 
@@ -836,6 +895,34 @@ render();
 /* ---------- Firebase (Realtime Database) ---------- */
 const FB_CFG = {apiKey:"AIzaSyCSo7K4LbBW1TYiTwFjInycodJRoOLxn3I",authDomain:"synoptique-999e4.firebaseapp.com",databaseURL:"https://synoptique-999e4-default-rtdb.europe-west1.firebasedatabase.app",projectId:"synoptique-999e4",storageBucket:"synoptique-999e4.firebasestorage.app",messagingSenderId:"690986611603",appId:"1:690986611603:web:57077c31a05fedeaabee66"};
 const FB_BASE = 'smur18/tableau';
+const GARDE_CFG = {apiKey:"AIzaSyBJWXQKq5m1kSQLGYfRcFk1I2E35xsdyhU",authDomain:"tableau2026-51a44.firebaseapp.com",databaseURL:"https://tableau2026-51a44-default-rtdb.europe-west1.firebasedatabase.app",projectId:"tableau2026-51a44",storageBucket:"tableau2026-51a44.firebasestorage.app",messagingSenderId:"1076304244773",appId:"1:1076304244773:web:aeefc856c83fd2965c4fcc"};
+let gardeData = null, staffLoaded = false, pendingShift = null;
+/* Synchronise l'équipe SMUR avec le tableau de garde (lecture ici, écriture via gardeHook). */
+function syncGarde(){
+  if(!gardeData || !staffLoaded || !db) return;
+  const TEAMS = {sp:'SMUR Primaire', ss:'SMUR Secondaire'};
+  const RK = {med:'med', ide:'ide', ambu:'amb'};
+  const want = {};
+  Object.keys(TEAMS).forEach(t => Object.keys(RK).forEach(k => {
+    const f = t + '-' + k;
+    const nom = String(gardeData[f + '-nom'] || '').trim();
+    if(nom) want['g-' + f] = {name:nom, role:RK[k], phone:String(gardeData[f + '-tel'] || '').trim(), team:TEAMS[t]};
+    const stag = String(gardeData[f + '-stag'] || '').trim();
+    if(stag) want['g-' + f + '-stag'] = {name:stag + ' (stagiaire)', role:RK[k], phone:String(gardeData[f + '-stag-tel'] || '').trim(), team:TEAMS[t]};
+  }));
+  Object.entries(want).forEach(([id, w]) => {
+    const cur = state.staff[id];
+    if(!cur || cur.name !== w.name){
+      const fk = id.replace(/^g-/,'') + (id.endsWith('-stag') ? '' : '-nom');
+      const sh = (pendingShift && pendingShift[fk]) || defaultShift(w.role);
+      if(pendingShift) delete pendingShift[fk];
+      put('staff', id, Object.assign({}, w, {shift: sh, vehicle: null, src:'garde'}));
+    } else if(cur.phone !== w.phone || cur.team !== w.team || cur.role !== w.role || cur.src !== 'garde'){
+      patch('staff', id, Object.assign({}, w, {src:'garde'}));
+    }
+  });
+  Object.entries(state.staff).forEach(([id, s]) => { if(s.src === 'garde' && !want[id]) del('staff', id); });
+}
 const clean = o => JSON.parse(JSON.stringify(o));
 import('https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js').then(m1 =>
   import('https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js').then(m2 => {
@@ -852,7 +939,44 @@ import('https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js').then(m1 =>
       if(!v && !seeded){ seeded = true; m2.set(R('vehicles'), DEF_VEH); return; }
       state.vehicles = v || {}; render();
     }, onErr);
-    m2.onValue(R('staff'), s => { state.staff = s.val() || {}; render(); }, onErr);
+    m2.onValue(R('staff'), s => { state.staff = s.val() || {}; staffLoaded = true; render(); syncGarde(); }, onErr);
+
+    /* --- Liaison avec le tableau de garde (projet tableau2026, garde/etat) --- */
+    try{
+      const gApp = m1.initializeApp(GARDE_CFG, 'tableau-garde');
+      const gDb = m2.getDatabase(gApp);
+      m2.onValue(m2.ref(gDb, 'garde/etat'), s => { gardeData = s.val() || {}; gardeLink = 'ok'; render(); syncGarde(); },
+        () => { gardeLink = 'refus'; render(); toast('Tableau de garde : accès refusé, vérifiez ses règles Firebase.'); });
+      let gardeLists = null;
+      m2.onValue(m2.ref(gDb, 'garde/listes'), s => { gardeLists = s.val(); });
+      const LIST_KEY = {med:'medGardes', ide:'ide', amb:'ambulanciers'};
+      const asArr = v => Array.isArray(v) ? v.filter(Boolean) : (v ? Object.values(v) : []);
+      gardeHook = {
+        value: f => String((gardeData && gardeData[f]) || '').trim(),
+        names: role => asArr(gardeLists && gardeLists[LIST_KEY[role]]).map(e => e && e.nom).filter(Boolean),
+        /* fields : {champ: valeur}. role : si donné, le nom est ajouté à la liste déroulante du tableau s'il n'y est pas. */
+        write: async (fields, role, shift) => {
+          if(!gardeData) gardeData = {};
+          try{
+            if(role){
+              const nameField = Object.keys(fields).find(k => /-nom$/.test(k));
+              const nm = nameField && String(fields[nameField]).trim();
+              const key = LIST_KEY[role];
+              if(nm && gardeLists && gardeLists[key]){
+                const list = asArr(gardeLists[key]);
+                if(!list.some(e => e && String(e.nom).trim().toLowerCase() === nm.toLowerCase())){
+                  await m2.set(m2.ref(gDb, 'garde/listes/' + key), list.concat([{nom:nm, dect:''}]));
+                }
+              }
+            }
+            Object.assign(gardeData, fields);           // mise à jour immédiate côté engins
+            if(shift) pendingShift = Object.assign(pendingShift || {}, {[Object.keys(fields)[0]]: shift});
+            syncGarde();
+            await m2.update(m2.ref(gDb, 'garde/etat'), fields);
+          }catch(e){ toast("Écriture refusée dans le tableau de garde : vérifiez ses règles Firebase."); }
+        }
+      };
+    }catch(e){ gardeLink = 'refus'; }
     m2.onValue(R('garde/info'), s => { const g = s.val(); if(g){ state.garde = g; render(); } }, onErr);
   })
 ).catch(() => { fbState = 'echec'; render(); toast('Firebase inaccessible : les données restent sur ce poste.'); });
